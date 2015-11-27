@@ -1,0 +1,5 @@
+# Install in: /etc/udev/rules.d/
+
+#KERNEL=="gpio*", SUBSYSTEM=="gpio", ACTION=="add", GROUP="gpio", MODE="0660"
+KERNEL=="gpio*", SUBSYSTEM=="gpio", ACTION=="add", PROGRAM="/bin/gpioudev.sh /sys%p"
+
