@@ -1,6 +1,3 @@
-# provide definitions such as
-#include "xxxRecord.dbd"
-#device(xxx,CONSTANT,devXxxSoft,"SoftChannel")
-#driver(myDriver)
-#registrar(myRegistrar)
-#variable(myVariable)
+device(bi,INST_IO,devGpioBi,"devgpio")
+device(bo,INST_IO,devGpioBo,"devgpio")
+registrar( "devGpioConstRegister" )
