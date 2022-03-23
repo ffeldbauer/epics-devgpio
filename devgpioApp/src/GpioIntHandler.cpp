@@ -30,19 +30,20 @@
 //_____ I N C L U D E S ________________________________________________________
 
 // ANSI C/C++ includes
+#include <algorithm>
 #include <cstdio>
-#include <exception>
-#include <iostream>
-#include <sstream>
+#include <cerrno>
+#include <cstring>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <linux/gpio.h>
 
 // EPICS includes
 
 // local includes
 #include "devGpio.h"
 #include "GpioIntHandler.hpp"
-#include "devGpioManager.hpp"
-#include "devGpioErrors.hpp"
 
 //_____ D E F I N I T I O N S __________________________________________________
 
@@ -75,25 +76,28 @@ GpioIntHandler::~GpioIntHandler() {
 //------------------------------------------------------------------------------
 void GpioIntHandler::run() {
 
-  epicsUInt32 offset = 0;
   while( true ) {
     if( _recs.empty() ) {
       this->thread.sleep( _pause );
       continue;
     }
 
-    while( offset < 0xffffffff ) {
-      try{
-        offset = GpioManager::instance().event();
-      } catch( DevGpioException &e ) {
-        std::cerr << "GpioIntHandler: " << e.what() << std::endl;
-        break;
+    for( auto r : _recs ) {
+      struct gpio_v2_line_event event;
+      int rtn = read( r->fd, &event, sizeof(event));
+      if( -1 == rtn ) {
+        if( errno == -EAGAIN ) {
+          continue;
+        } else {
+          perror( "GpioIntHandler: Failed to read event: " );
+          continue;
+        }
       }
-    }
-
-    std::map<int, devGpio_info_t*>::iterator it = _recs.find(offset);
-    if( it != _recs.end() ) {
-      if( it->second->pcallback )  callbackRequest( it->second->pcallback );
+      if( rtn != sizeof( event )) {
+        perror( "GpioIntHandler: Failed to read event: " );
+        continue;
+      }
+      callbackRequest( r->pcallback );
     }
   }
 }
@@ -105,25 +109,16 @@ void GpioIntHandler::run() {
 //!
 //! @param   [in]  prec  Address of the record to be added
 //------------------------------------------------------------------------------
-void GpioIntHandler::registerGpio( epicsUInt32 gpio, devGpio_info_t *pinfo ) {
-  _recs.insert( std::make_pair( gpio, pinfo ) );
-}
-
-//------------------------------------------------------------------------------
-//! @brief   Add a record to the list
-//!
-//! Registers a new record to be checked by the thread
-//!
-//! @param   [in]  prec  Address of the record to be added
-//------------------------------------------------------------------------------
-void GpioIntHandler::registerInterrupt( devGpio_info_t *pinfo ) {
+void GpioIntHandler::registerInterrupt( dbCommon *prec ) {
+  devGpio_info_t *pinfo = (devGpio_info_t *)prec->dpvt;
   if( !pinfo->pcallback ) {
     CALLBACK *pcallback = new CALLBACK;
     callbackSetCallback( devGpioCallback, pcallback );
-    callbackSetUser( (void*)pinfo, pcallback );
+    callbackSetUser( (void*)prec, pcallback );
     callbackSetPriority( priorityLow, pcallback );
     pinfo->pcallback = pcallback;
   }
+  _recs.push_back( pinfo );
 }
 
 //------------------------------------------------------------------------------
@@ -138,5 +133,7 @@ void GpioIntHandler::cancelInterrupt( devGpio_info_t* pinfo ) {
     delete pinfo->pcallback;
     pinfo->pcallback = nullptr;
   }
+  std::vector<devGpio_info_t const*>::iterator it = std::find( _recs.begin(), _recs.end(), pinfo );
+  _recs.erase(it);
 }
 

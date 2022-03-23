@@ -69,8 +69,7 @@ typedef struct {
  */
 typedef struct {
   struct link const* ioLink;
-  bool output;
-  epicsUInt32 initialValue;
+  epicsUInt64 flags;
 } devGpio_rec_t;
 
 /**
@@ -79,12 +78,9 @@ typedef struct {
  * Private data needed by device support routines
  */
 typedef struct {
-  epicsUInt64 mask;      /**< mask for write/read gpios */
-  CALLBACK *pcallback;   /**< Address of EPICS callback structure */
-  dbCommon *prec;        /**< Address of the record */
-  IOSCANPVT ioscanpvt;   /**< EPICS Structure needed for I/O Intrupt handling*/
-  epicsUInt32 value;     /**< Value read from GPIO */
-  char errmsg[256];      /**< store error message */
+  int fd;              /**< File descriptor for GPIO handling */
+  CALLBACK *pcallback; /**< Address of EPICS callback structure */
+  IOSCANPVT ioscanpvt; /**< EPICS Structure needed for I/O Intrupt handling*/
 } devGpio_info_t;
 
 #ifdef __cplusplus
@@ -92,10 +88,8 @@ extern "C" {
 #endif
 
 epicsShareExtern long devGpioInit( int after );
-epicsShareExtern long devGpioInitRecord( dbCommon *prec, devGpio_rec_t* pconf );
+epicsShareExtern epicsUInt16 devGpioInitRecord( dbCommon *prec, devGpio_rec_t* pconf );
 epicsShareExtern long devGpioGetIoIntInfo( int cmd, dbCommon *prec, IOSCANPVT *ppvt );
-epicsShareExtern long devGpioRead( devGpio_info_t *pinfo );
-epicsShareExtern long devGpioWrite( devGpio_info_t *pinfo );
 epicsShareExtern void devGpioCallback( CALLBACK *pcallback );
 
 #ifdef __cplusplus

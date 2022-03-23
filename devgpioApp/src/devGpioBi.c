@@ -38,6 +38,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <linux/gpio.h>
+#include <sys/ioctl.h>
 
 /* EPICS includes */
 #include <biRecord.h>
@@ -80,14 +84,17 @@ epicsExportAddress( dset, devGpioBi );
  *
  * @return  In case of error return -1, otherwise return 0
  *----------------------------------------------------------------------------*/
-static long devGpioInitRecord_bi( biRecord *prec ){
+long devGpioInitRecord_bi( biRecord *prec ){
   prec->pact = (epicsUInt8)true; /* disable record */
 
-  devGpio_rec_t conf = { &prec->inp, false, 0 };
-  long status = devGpioInitRecord( (dbCommon*)prec, &conf );
-  if( ERROR == status ) return ERROR;
+  devGpio_rec_t conf = { &prec->inp, GPIO_V2_LINE_FLAG_INPUT };
+  epicsUInt16 nobt = devGpioInitRecord( (dbCommon*)prec, &conf );
+  if( 1 != nobt ) {
+    fprintf( stderr, "\033[31;1m%s: Invalid number of gpio lines: %u\033[0m\n",
+             prec->name, nobt );
+    return ERROR;
+  }
 
-  prec->rval = conf.initialValue;
   prec->udf = 0;
   prec->pact = (epicsUInt8)false; /* enable record */
 
@@ -103,13 +110,16 @@ static long devGpioInitRecord_bi( biRecord *prec ){
  *----------------------------------------------------------------------------*/
 long devGpioRead_bi( biRecord *prec ) {
   devGpio_info_t *pinfo = (devGpio_info_t *)prec->dpvt;
-  long status = devGpioRead( pinfo );
-  if( ERROR == status ) {
-    fprintf( stderr, "\033[31;1m%s: Could not read value: %s\033[0m\n",
-             prec->name, pinfo->errmsg );
+
+  struct gpio_v2_line_values values = { 0, 1 };
+  int ret = ioctl( pinfo->fd, GPIO_V2_LINE_GET_VALUES_IOCTL, &values );
+  if( -1 == ret ) {
+    fprintf( stderr, "\033[31;1m%s: Could not read gpio line: %s\033[0m\n",
+             prec->name, strerror( errno ) );
     recGblSetSevr( prec, READ_ALARM, INVALID_ALARM );
+    return ERROR;
   }
-  prec->rval = pinfo->value;
-  return status;
+  prec->rval = values.bits & 1;
+  return OK;
 }
 

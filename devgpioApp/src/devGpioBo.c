@@ -38,6 +38,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <linux/gpio.h>
+#include <sys/ioctl.h>
 
 /* EPICS includes */
 #include <boRecord.h>
@@ -83,10 +87,15 @@ epicsExportAddress( dset, devGpioBo );
 static long devGpioInitRecord_bo( boRecord *prec ){
   prec->pact = (epicsUInt8)true; /* disable record */
 
-  devGpio_rec_t conf = { &prec->out, true, 0 };
-  long status = devGpioInitRecord( (dbCommon*)prec, &conf );
-  if( status != 0 ) return ERROR;
+  devGpio_rec_t conf = { &prec->out, GPIO_V2_LINE_FLAG_OUTPUT };
+  epicsUInt16 nobt = devGpioInitRecord( (dbCommon*)prec, &conf );
+  if( 1 != nobt ) {
+    fprintf( stderr, "\033[31;1m%s: Invalid number of gpio lines: %u\033[0m\n",
+             prec->name, nobt );
+    return ERROR;
+  }
 
+  prec->udf = 0;
   prec->pact = (epicsUInt8)false; /* enable record */
 
   return OK;
@@ -101,13 +110,15 @@ static long devGpioInitRecord_bo( boRecord *prec ){
  *----------------------------------------------------------------------------*/
 long devGpioWrite_bo( boRecord *prec ) {
   devGpio_info_t *pinfo = (devGpio_info_t *)prec->dpvt;
-  pinfo->value = prec->rval;
-  long status = devGpioWrite( pinfo );
-  if( ERROR == status ) {
-    fprintf( stderr, "\033[31;1m%s: Could not write value: %s\033[0m\n",
-             prec->name, pinfo->errmsg );
+
+  struct gpio_v2_line_values values = { prec->rval, 1 };
+  int ret = ioctl( pinfo->fd, GPIO_V2_LINE_SET_VALUES_IOCTL, &values );
+  if( -1 == ret ) {
+    fprintf( stderr, "\033[31;1m%s: Could not set gpio line: %s\033[0m\n",
+             prec->name, strerror( errno ) );
     recGblSetSevr( prec, WRITE_ALARM, INVALID_ALARM );
+    return ERROR;
   }
-  return status;
+  return OK;
 }
 

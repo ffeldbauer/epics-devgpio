@@ -28,12 +28,12 @@
 //_____ I N C L U D E S ________________________________________________________
 
 // ANSI C/C++ includes
-#include <map>
-#include <string>
+#include <vector>
 
 // EPICS includes
 #include <epicsThread.h>
 #include <epicsTypes.h>
+#include <dbCommon.h>
 
 // local includes
 #include "devGpio.h"
@@ -55,14 +55,13 @@ class GpioIntHandler: public epicsThreadRunable {
 
     epicsThread thread;
 
-    void registerGpio( epicsUInt32 gpio, devGpio_info_t *pinfo );
-    void registerInterrupt( devGpio_info_t* pinfo );
+    void registerInterrupt( dbCommon *prec );
     void cancelInterrupt( devGpio_info_t* pinfo );
 
   private:
 
     double _pause;
-    std::map< int, devGpio_info_t* > _recs;
+    std::vector<devGpio_info_t const*> _recs;
 };
 
 #endif

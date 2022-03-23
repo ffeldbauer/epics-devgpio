@@ -27,13 +27,11 @@
 //! @date 13 Aug 2015
 //! @brief Implementation of GPIO Manager class
 
-//! TODO: I/O interrupt handling hard coded on both flanks...Option to set by user?
-
 //_____ I N C L U D E S ________________________________________________________
 
 // ANSI C/C++ includes
 #include <cstring>
-#include <exception>
+#include <cerrno>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -42,7 +40,6 @@
 #include <fcntl.h>
 #include <linux/gpio.h>
 #include <sys/ioctl.h>
-
 
 // EPICS includes
 #include <alarm.h>
@@ -56,8 +53,6 @@
 
 // local includes
 #include "devGpio.h"
-#include "devGpioManager.hpp"
-#include "devGpioErrors.hpp"
 #include "GpioIntHandler.hpp"
 
 //_____ D E F I N I T I O N S __________________________________________________
@@ -65,7 +60,8 @@
 //_____ G L O B A L S __________________________________________________________
 
 //_____ L O C A L S ____________________________________________________________
-static GpioIntHandler* intHandler = NULL;
+static GpioIntHandler* intHandler = nullptr;
+static int gpiochip = -1;
 
 //_____ F U N C T I O N S ______________________________________________________
 
@@ -82,6 +78,9 @@ static bool iequals( std::string const & a, std::string const& b) {
   return true;
 }
 
+//------------------------------------------------------------------------------
+//! @brief   Check if string is a number
+//------------------------------------------------------------------------------
 static bool is_number( std::string const& s ) {
   return !s.empty() && s.find_first_not_of("0123456789") == std::string::npos;
 }
@@ -101,6 +100,12 @@ long devGpioInit( int after ) {
     if ( !firstRunBefore ) return OK;
     firstRunBefore = false;
 
+    gpiochip = open( "/dev/gpiochip0", 0 );
+    if( 0 > gpiochip ) {
+      perror( "Could not open GPIO device: " );
+      return ERROR;
+    }
+
     intHandler = new GpioIntHandler();
 
   } else {
@@ -109,12 +114,10 @@ long devGpioInit( int after ) {
     if ( !firstRunAfter ) return OK;
     firstRunAfter = false;
 
-    try{
-      GpioManager::instance().request();
-    } catch( DevGpioException &e ) {
-      std::cerr << e.what() << std::endl;
-      return ERROR;
+    if( 0 <= gpiochip ) {
+      close( gpiochip );
     }
+
     intHandler->thread.start();
   }
 
@@ -130,8 +133,8 @@ long devGpioInit( int after ) {
 //!
 //! @return  In case of error return -1, otherwise return 0
 //------------------------------------------------------------------------------
-long devGpioInitRecord( dbCommon *prec, devGpio_rec_t* pconf ){
-  std::vector< std::string > options;
+epicsUInt16 devGpioInitRecord( dbCommon *prec, devGpio_rec_t* pconf ){
+  if( 0 > gpiochip )  return ERROR;
 
   if( INST_IO != pconf->ioLink->type ) {
     std::cerr << prec->name << ": Invalid link type for INP/OUT field: "
@@ -142,6 +145,7 @@ long devGpioInitRecord( dbCommon *prec, devGpio_rec_t* pconf ){
 
   std::istringstream ss( pconf->ioLink->value.instio.string );
   std::string option;
+  std::vector< std::string > options;
   while( std::getline( ss, option, ' ' ) ) options.push_back( option );
 
   if( options.empty() ) {
@@ -151,16 +155,15 @@ long devGpioInitRecord( dbCommon *prec, devGpio_rec_t* pconf ){
   }
 
   std::vector<epicsUInt32> gpios;
-  epicsUInt64 flags = 0;
   for( auto opt : options ){
     if( iequals( opt, "low" ) || iequals( opt, "l" ) ) {
-      flags |= GPIO_V2_LINE_FLAG_ACTIVE_LOW;
+      pconf->flags |= GPIO_V2_LINE_FLAG_ACTIVE_LOW;
     } else if( iequals( opt, "falling" ) || iequals( opt, "f" ) ) {
-      flags |= GPIO_V2_LINE_FLAG_EDGE_FALLING;
+      pconf->flags |= GPIO_V2_LINE_FLAG_EDGE_FALLING;
     } else if( iequals( opt, "rising" ) || iequals( opt, "r" ) ) {
-      flags |= GPIO_V2_LINE_FLAG_EDGE_RISING;
+      pconf->flags |= GPIO_V2_LINE_FLAG_EDGE_RISING;
     } else if( iequals( opt, "both" ) || iequals( opt, "b" ) ) {
-      flags |= GPIO_V2_LINE_FLAG_EDGE_FALLING | GPIO_V2_LINE_FLAG_EDGE_RISING;
+      pconf->flags |= GPIO_V2_LINE_FLAG_EDGE_FALLING | GPIO_V2_LINE_FLAG_EDGE_RISING;
     } else if( is_number( opt )) {
       gpios.push_back( std::stoi( opt ));
     } else {
@@ -169,40 +172,45 @@ long devGpioInitRecord( dbCommon *prec, devGpio_rec_t* pconf ){
     }
   }
 
-  if( pconf->output ) {
-    flags |= GPIO_V2_LINE_FLAG_OUTPUT;
-  } else {
-    flags |= GPIO_V2_LINE_FLAG_INPUT;
-  }
+  struct gpio_v2_line_request req;
+  memset( &req, 0, sizeof( req ));
+  strcpy( req.consumer, "EPICS devGpio" );
 
-  epicsUInt64 mask = 0;
-  try{
-    for( auto g : gpios ){
-      epicsUInt32 offset = GpioManager::instance().registerGpio( g, flags );
-      mask |= 1 << offset;
+  epicsUInt16 nobt = 0;
+  for( auto g : gpios ){
+    struct gpio_v2_line_info linfo;
+    memset( &linfo, 0, sizeof( linfo ));
+    linfo.offset = g;
+    int rtn = ioctl( gpiochip, GPIO_V2_GET_LINEINFO_IOCTL, &linfo );
+    if( -1 == rtn ) {
+      std::cerr << prec->name << ": Unable to get line info: " << strerror( errno ) << std::endl;
+      return ERROR;
     }
-  } catch( GpioManagerWarning &e ) {
-    std::cerr << prec->name << ": " << e.what() << std::endl;
-  } catch( DevGpioException &e ) {
-    std::cerr << prec->name << ": " << e.what() << std::endl;
+    if( linfo.flags & GPIO_V2_LINE_FLAG_USED ) {
+      std::cerr << prec->name << ": GPIO " << g << " already in use" << std::endl;
+      return ERROR;
+    }
+    req.offsets[nobt++] = g;
+  }
+  req.num_lines = nobt;
+  req.config.flags = pconf->flags;
+
+  int rtn = ioctl( gpiochip, GPIO_V2_GET_LINE_IOCTL, &req );
+  if( -1 == rtn ) {
+    std::cerr << prec->name << ": Request gpio lines failed: " << strerror( errno ) << std::endl;
     return ERROR;
   }
 
-
   devGpio_info_t *pinfo = new devGpio_info_t;
-  pinfo->mask = mask;
-  pinfo->prec = prec;
-  pinfo->pcallback = NULL;  // just to be sure
+  pinfo->fd = req.fd;
+  pinfo->pcallback = nullptr;
 
   // I/O Intr handling
   scanIoInit( &pinfo->ioscanpvt );
 
   prec->dpvt = pinfo;
 
-  for( auto g : gpios ){
-    intHandler->registerGpio( g, pinfo );
-  }
-  return OK;
+  return nobt;
 }
 
 //------------------------------------------------------------------------------
@@ -218,7 +226,7 @@ long devGpioGetIoIntInfo( int cmd, dbCommon *prec, IOSCANPVT *ppvt ){
   devGpio_info_t *pinfo = (devGpio_info_t *)prec->dpvt;
   *ppvt = pinfo->ioscanpvt;
   if ( 0 == cmd ) {
-    intHandler->registerInterrupt( pinfo );
+    intHandler->registerInterrupt( prec );
   } else {
     intHandler->cancelInterrupt( pinfo );
   }
@@ -235,45 +243,9 @@ long devGpioGetIoIntInfo( int cmd, dbCommon *prec, IOSCANPVT *ppvt ){
 void devGpioCallback( CALLBACK *pcallback ) {
   void *puser;
   callbackGetUser( puser, pcallback );
-
-  devGpio_info_t *pinfo = (devGpio_info_t *)puser;
-
-  dbScanLock( pinfo->prec );
-  dbProcess( pinfo->prec );
-  dbScanUnlock( pinfo->prec );
-}
-
-//------------------------------------------------------------------------------
-//! @brief   Wrapper to read GPIO value
-//!
-//! @param   [in]  pinfo  Address of private data from record
-//!
-//! @return  ERROR in case of an error, otherwise OK
-//------------------------------------------------------------------------------
-long devGpioRead( devGpio_info_t *pinfo ){
-  try{
-    pinfo->value = GpioManager::instance().getValue( pinfo->mask );
-  } catch( GpioManagerError &e ) {
-    strncpy( pinfo->errmsg, e.what(), 255 );
-    return ERROR;
-  }
-  return OK;
-}
-
-//------------------------------------------------------------------------------
-//! @brief   Wrapper to write GPIO value
-//!
-//! @param   [in]  pinfo  Address of private data from record
-//!
-//! @return  ERROR in case of an error, otherwise OK
-//------------------------------------------------------------------------------
-long devGpioWrite( devGpio_info_t *pinfo ){
-  try{
-    GpioManager::instance().setValue( pinfo->mask, pinfo->value );
-  } catch( GpioManagerError &e ) {
-    strncpy( pinfo->errmsg, e.what(), 255 );
-    return ERROR;
-  }
-  return OK;
+  dbCommon* prec = (dbCommon *)puser;
+  dbScanLock( prec );
+  dbProcess( prec );
+  dbScanUnlock( prec );
 }
 
