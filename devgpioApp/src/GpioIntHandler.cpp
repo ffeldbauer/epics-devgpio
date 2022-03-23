@@ -33,16 +33,16 @@
 #include <cstdio>
 #include <exception>
 #include <iostream>
-#include <fcntl.h>
 #include <sstream>
-#include <sys/epoll.h>
 #include <unistd.h>
 
 // EPICS includes
 
 // local includes
 #include "devGpio.h"
-#include "GpioIntHandler.h"
+#include "GpioIntHandler.hpp"
+#include "devGpioManager.hpp"
+#include "devGpioErrors.hpp"
 
 //_____ D E F I N I T I O N S __________________________________________________
 
@@ -60,13 +60,6 @@ GpioIntHandler::GpioIntHandler()
 {
   _pause = 5;
   _recs.clear();
-
-  _efd = epoll_create1(0);
-  if( -1 == _efd ) {
-    perror("epoll_create1");
-    return;
-  }
-
 }
 
 //------------------------------------------------------------------------------
@@ -74,7 +67,6 @@ GpioIntHandler::GpioIntHandler()
 //------------------------------------------------------------------------------
 GpioIntHandler::~GpioIntHandler() {
   _recs.clear();
-  close( _efd );
 }
 
 //------------------------------------------------------------------------------
@@ -83,34 +75,26 @@ GpioIntHandler::~GpioIntHandler() {
 //------------------------------------------------------------------------------
 void GpioIntHandler::run() {
 
-  int max_events = 0;
-  int nfds = 0;
-  struct epoll_event *events = NULL;
-
+  epicsUInt32 offset = 0;
   while( true ) {
     if( _recs.empty() ) {
       this->thread.sleep( _pause );
       continue;
     }
 
-    max_events = _recs.size();
-    events = new struct epoll_event[max_events];
-
-    nfds = epoll_wait( _efd, events, max_events, 500 );
-    if( -1 == nfds ) {
-      perror("epoll_wait");
-      break;
-    }
-
-    for( int n = 0; n < nfds; ++n ) {
-
-      std::map<int, HANDLE*>::iterator it = _recs.find( events[n].data.fd );
-      if( it != _recs.end() ) {
-        callbackRequest( it->second->pinfo->pcallback );
+    while( offset < 0xffffffff ) {
+      try{
+        offset = GpioManager::instance().event();
+      } catch( DevGpioException &e ) {
+        std::cerr << "GpioIntHandler: " << e.what() << std::endl;
+        break;
       }
     }
-    delete[] events;
-    events = NULL;
+
+    std::map<int, devGpio_info_t*>::iterator it = _recs.find(offset);
+    if( it != _recs.end() ) {
+      if( it->second->pcallback )  callbackRequest( it->second->pcallback );
+    }
   }
 }
 
@@ -121,9 +105,18 @@ void GpioIntHandler::run() {
 //!
 //! @param   [in]  prec  Address of the record to be added
 //------------------------------------------------------------------------------
-void GpioIntHandler::registerInterrupt( devGpio_info_t *pinfo ) {
-  static std::string gpiobase = "/sys/class/gpio/gpio";
+void GpioIntHandler::registerGpio( epicsUInt32 gpio, devGpio_info_t *pinfo ) {
+  _recs.insert( std::make_pair( gpio, pinfo ) );
+}
 
+//------------------------------------------------------------------------------
+//! @brief   Add a record to the list
+//!
+//! Registers a new record to be checked by the thread
+//!
+//! @param   [in]  prec  Address of the record to be added
+//------------------------------------------------------------------------------
+void GpioIntHandler::registerInterrupt( devGpio_info_t *pinfo ) {
   if( !pinfo->pcallback ) {
     CALLBACK *pcallback = new CALLBACK;
     callbackSetCallback( devGpioCallback, pcallback );
@@ -131,27 +124,6 @@ void GpioIntHandler::registerInterrupt( devGpio_info_t *pinfo ) {
     callbackSetPriority( priorityLow, pcallback );
     pinfo->pcallback = pcallback;
   }
-
-  std::stringstream filename;
-  filename << gpiobase << pinfo->gpio << "/value";
-
-  int fd = open( filename.str().c_str(), O_RDONLY | O_NONBLOCK );
-
-  struct epoll_event ev;
-  ev.events = EPOLLIN | EPOLLET | EPOLLPRI;
-  ev.data.fd = fd;
-
-  if( epoll_ctl( _efd, EPOLL_CTL_ADD, fd, &ev ) == -1 ) {
-    perror( "epoll_ctl" );
-    return;
-  }
-
-  HANDLE *phandle = new HANDLE;
-  phandle->pinfo = pinfo;
-  phandle->pev = &ev;
-
-  _recs.insert( std::make_pair( fd, phandle ) );
-
 }
 
 //------------------------------------------------------------------------------
@@ -161,18 +133,10 @@ void GpioIntHandler::registerInterrupt( devGpio_info_t *pinfo ) {
 //!
 //! @param   [in]  pinfo  Address of the record's private data structure
 //------------------------------------------------------------------------------
-void GpioIntHandler::cancelInterrupt( devGpio_info_t const* pinfo ) {
-  std::map<int, HANDLE*>::iterator it = _recs.begin();
-  for( ; it != _recs.end(); ++it ) {
-    if( pinfo == it->second->pinfo ) {
-      if( epoll_ctl( _efd, EPOLL_CTL_DEL, it->first, it->second->pev ) == -1 ) {
-        perror( "epoll_ctl" );
-        return;
-      }
-      close( it->first );
-      _recs.erase( it );
-      break;
-    }
-  } 
+void GpioIntHandler::cancelInterrupt( devGpio_info_t* pinfo ) {
+  if( pinfo->pcallback ) {
+    delete pinfo->pcallback;
+    pinfo->pcallback = nullptr;
+  }
 }
 

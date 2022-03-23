@@ -79,12 +79,12 @@ typedef struct {
  * Private data needed by device support routines
  */
 typedef struct {
-  epicsUInt32 gpio;     /**< number of handled GPIO */
-  CALLBACK *pcallback;  /**< Address of EPICS callback structure */
-  dbCommon *prec;       /**< Address of the record */
-  IOSCANPVT ioscanpvt;  /**< EPICS Structure needed for I/O Intrupt handling*/
-  epicsUInt32 value;    /**< Value read from GPIO */
-  char errmsg[256];     /**< store error message */
+  epicsUInt64 mask;      /**< mask for write/read gpios */
+  CALLBACK *pcallback;   /**< Address of EPICS callback structure */
+  dbCommon *prec;        /**< Address of the record */
+  IOSCANPVT ioscanpvt;   /**< EPICS Structure needed for I/O Intrupt handling*/
+  epicsUInt32 value;     /**< Value read from GPIO */
+  char errmsg[256];      /**< store error message */
 } devGpio_info_t;
 
 #ifdef __cplusplus

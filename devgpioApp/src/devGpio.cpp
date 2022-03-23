@@ -39,6 +39,10 @@
 #include <string>
 #include <vector>
 #include <unistd.h>
+#include <fcntl.h>
+#include <linux/gpio.h>
+#include <sys/ioctl.h>
+
 
 // EPICS includes
 #include <alarm.h>
@@ -52,10 +56,9 @@
 
 // local includes
 #include "devGpio.h"
-#include "devGpioManager.h"
-#include "devGpioErrors.h"
-#include "GpioConst.h"
-#include "GpioIntHandler.h"
+#include "devGpioManager.hpp"
+#include "devGpioErrors.hpp"
+#include "GpioIntHandler.hpp"
 
 //_____ D E F I N I T I O N S __________________________________________________
 
@@ -77,6 +80,10 @@ static bool iequals( std::string const & a, std::string const& b) {
   for( unsigned i = 0; i < a.size(); ++i )
     if( tolower( a[i] ) != tolower( b[i] ) ) return false;
   return true;
+}
+
+static bool is_number( std::string const& s ) {
+  return !s.empty() && s.find_first_not_of("0123456789") == std::string::npos;
 }
 
 //------------------------------------------------------------------------------
@@ -102,6 +109,12 @@ long devGpioInit( int after ) {
     if ( !firstRunAfter ) return OK;
     firstRunAfter = false;
 
+    try{
+      GpioManager::instance().request();
+    } catch( DevGpioException &e ) {
+      std::cerr << e.what() << std::endl;
+      return ERROR;
+    }
     intHandler->thread.start();
   }
 
@@ -118,7 +131,6 @@ long devGpioInit( int after ) {
 //! @return  In case of error return -1, otherwise return 0
 //------------------------------------------------------------------------------
 long devGpioInitRecord( dbCommon *prec, devGpio_rec_t* pconf ){
-  epicsUInt32 gpioID = 0xffffffff;
   std::vector< std::string > options;
 
   if( INST_IO != pconf->ioLink->type ) {
@@ -132,35 +144,43 @@ long devGpioInitRecord( dbCommon *prec, devGpio_rec_t* pconf ){
   std::string option;
   while( std::getline( ss, option, ' ' ) ) options.push_back( option );
 
-  if( options.size() > 2 || options.empty() ) {
+  if( options.empty() ) {
     std::cerr << prec->name << ": Invalid INP/OUT field: " << ss.str() << "\n"
-              << "    Syntax is \"<GPIO> [LOGIC]\"" << std::endl;
+              << "    Syntax is \"<GPIO1> [GPIO2] [LOW] [FALLING/RISING/BOTH]\"" << std::endl;
     return ERROR;
   }
 
-  GpioManager::LOGIC_VALUE logic = GpioManager::ACTIVE_HIGH;
-  if( options.size() == 2 ) {
-    if( iequals( options.at(1), "high" ) || iequals( options.at(1), "h" ) ) {
-      logic = GpioManager::ACTIVE_HIGH;
-    } else if( iequals( options.at(1), "low" ) || iequals( options.at(1), "l" ) ) {
-      logic = GpioManager::ACTIVE_LOW;
+  std::vector<epicsUInt32> gpios;
+  epicsUInt64 flags = 0;
+  for( auto opt : options ){
+    if( iequals( opt, "low" ) || iequals( opt, "l" ) ) {
+      flags |= GPIO_V2_LINE_FLAG_ACTIVE_LOW;
+    } else if( iequals( opt, "falling" ) || iequals( opt, "f" ) ) {
+      flags |= GPIO_V2_LINE_FLAG_EDGE_FALLING;
+    } else if( iequals( opt, "rising" ) || iequals( opt, "r" ) ) {
+      flags |= GPIO_V2_LINE_FLAG_EDGE_RISING;
+    } else if( iequals( opt, "both" ) || iequals( opt, "b" ) ) {
+      flags |= GPIO_V2_LINE_FLAG_EDGE_FALLING | GPIO_V2_LINE_FLAG_EDGE_RISING;
+    } else if( is_number( opt )) {
+      gpios.push_back( std::stoi( opt ));
     } else {
-      std::cerr << prec->name << ": Invalid option for logic: " << options.at(1) << std::endl;
+      std::cerr << prec->name << ": Invalid option: " << opt << std::endl;
       return ERROR;
     }
   }
 
+  if( pconf->output ) {
+    flags |= GPIO_V2_LINE_FLAG_OUTPUT;
+  } else {
+    flags |= GPIO_V2_LINE_FLAG_INPUT;
+  }
+
+  epicsUInt64 mask = 0;
   try{
-    if( GpioConst::exists() ) {
-      gpioID = GpioConst::instance()->findGPIO( options.at(0) );
-    } else {
-      sscanf( options.at(0).c_str(), "%u", &gpioID );
+    for( auto g : gpios ){
+      epicsUInt32 offset = GpioManager::instance().registerGpio( g, flags );
+      mask |= 1 << offset;
     }
-    if( 0xffffffff == gpioID ) { // None of the supported boards has a gpio 4294967295
-      std::cerr << prec->name << ": Invalid GPIO number " << options.at(0) << std::endl;
-      return ERROR;
-    }
-    GpioManager::instance().exportPin( gpioID );
   } catch( GpioManagerWarning &e ) {
     std::cerr << prec->name << ": " << e.what() << std::endl;
   } catch( DevGpioException &e ) {
@@ -168,30 +188,9 @@ long devGpioInitRecord( dbCommon *prec, devGpio_rec_t* pconf ){
     return ERROR;
   }
 
-  try{ 
-    // On BeagleBone Black write permissions to gpios are granted via udev rule.
-    // Udev rule needs about 25 ms to set permissions for the files belonging to
-    // one GPIO.
-    GpioManager::instance().waitForUdev( gpioID );
-
-    GpioManager::instance().setLogic( gpioID, logic );
-
-    if( pconf->output ) {
-      GpioManager::instance().setDirection( gpioID, GpioManager::OUTPUT );
-    } else {
-      GpioManager::instance().setDirection( gpioID, GpioManager::INPUT );
-      pconf->initialValue = GpioManager::instance().getValue( gpioID );
-    }
-
-  } catch( GpioManagerWarning &e ) {
-    std::cerr << prec->name << ": " << e.what() << std::endl;
-  } catch( GpioManagerError &e ) {
-    std::cerr << prec->name << ": " << e.what() << std::endl;
-    return ERROR;
-  }
 
   devGpio_info_t *pinfo = new devGpio_info_t;
-  pinfo->gpio = gpioID;
+  pinfo->mask = mask;
   pinfo->prec = prec;
   pinfo->pcallback = NULL;  // just to be sure
 
@@ -200,6 +199,9 @@ long devGpioInitRecord( dbCommon *prec, devGpio_rec_t* pconf ){
 
   prec->dpvt = pinfo;
 
+  for( auto g : gpios ){
+    intHandler->registerGpio( g, pinfo );
+  }
   return OK;
 }
 
@@ -216,11 +218,9 @@ long devGpioGetIoIntInfo( int cmd, dbCommon *prec, IOSCANPVT *ppvt ){
   devGpio_info_t *pinfo = (devGpio_info_t *)prec->dpvt;
   *ppvt = pinfo->ioscanpvt;
   if ( 0 == cmd ) {
-    GpioManager::instance().setEdge( pinfo->gpio, GpioManager::BOTH );
     intHandler->registerInterrupt( pinfo );
   } else {
     intHandler->cancelInterrupt( pinfo );
-    GpioManager::instance().setEdge( pinfo->gpio, GpioManager::NONE );
   }
   return OK;
 }
@@ -252,7 +252,7 @@ void devGpioCallback( CALLBACK *pcallback ) {
 //------------------------------------------------------------------------------
 long devGpioRead( devGpio_info_t *pinfo ){
   try{
-    pinfo->value = GpioManager::instance().getValue( pinfo->gpio );
+    pinfo->value = GpioManager::instance().getValue( pinfo->mask );
   } catch( GpioManagerError &e ) {
     strncpy( pinfo->errmsg, e.what(), 255 );
     return ERROR;
@@ -269,48 +269,11 @@ long devGpioRead( devGpio_info_t *pinfo ){
 //------------------------------------------------------------------------------
 long devGpioWrite( devGpio_info_t *pinfo ){
   try{
-    GpioManager::instance().setValue( pinfo->gpio, pinfo->value );
+    GpioManager::instance().setValue( pinfo->mask, pinfo->value );
   } catch( GpioManagerError &e ) {
     strncpy( pinfo->errmsg, e.what(), 255 );
     return ERROR;
   }
   return OK;
-}
-
-extern "C" {
-  //----------------------------------------------------------------------------
-  //! @brief   EPICS iocsh callable function to call constructor
-  //!          for the GpioConst class
-  //!
-  //! @param   [in]  board  type of ARM-Board
-  //----------------------------------------------------------------------------
-  int devGpioConstConfigure( const char *board ) {
-    if( strcmp( board, "RASPI B REV2" ) == 0 )           GpioConst::create( GpioConst::RASPI_B_REV2 );
-    else if( strcmp( board, "RASPI B+" ) == 0 )          GpioConst::create( GpioConst::RASPI_BP );
-    else if( strcmp( board, "BEAGLEBONE BLACK" ) == 0 )  GpioConst::create( GpioConst::BEAGLEBONE_BLACK );
-    else {
-      std::cerr << "GpioConstConfigure: Invalid argument! '" << board << "'" << std::endl;
-      return ERROR;
-    }
-    return OK;
-  }
-  static const iocshArg initArg0 = { "board", iocshArgString };
-  static const iocshArg * const initArgs[] = { &initArg0 };
-  static const iocshFuncDef initFuncDef = { "GpioConstConfigure", 1, initArgs };
-  static void initCallFunc( const iocshArgBuf *args ) {
-    devGpioConstConfigure( args[0].sval );
-  }
-
-  //----------------------------------------------------------------------------
-  //! @brief   Register functions to EPICS
-  //----------------------------------------------------------------------------
-  void devGpioConstRegister( void ) {
-    static int firstTime = 1;
-    if ( firstTime ) {
-      iocshRegister( &initFuncDef, initCallFunc );
-      firstTime = 0;
-    }
-  }
-  epicsExportRegistrar( devGpioConstRegister );
 }
 

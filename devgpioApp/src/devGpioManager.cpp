@@ -31,18 +31,20 @@
 
 // ANSI C/C++ includes
 #include <cerrno>
-#include <cstdio>
 #include <cstring>
-#include <iostream>
-#include <fstream>
-#include <sstream>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <sys/epoll.h>
+#include <linux/gpio.h>
 #include <unistd.h>
+#include <iterator>
+#include <sstream>
 
 // EPICS includes
 
 // local includes
-#include "devGpioManager.h"
-#include "devGpioErrors.h"
+#include "devGpioManager.hpp"
+#include "devGpioErrors.hpp"
 
 //_____ D E F I N I T I O N S __________________________________________________
 
@@ -58,484 +60,195 @@ static const char ERR_END[] = "\033[0m\n";
 //! @brief   Standard Constructor
 //------------------------------------------------------------------------------
 GpioManager::GpioManager() {
-  _gpiobase = "/sys/class/gpio/gpio";
-  _mgpio.clear();
-
-  _mEdgeToString.insert( std::make_pair( NONE,    "none" ) );
-  _mEdgeToString.insert( std::make_pair( RISING,  "rising" ) );
-  _mEdgeToString.insert( std::make_pair( FALLING, "falling" ) );
-  _mEdgeToString.insert( std::make_pair( BOTH,    "both" ) );
-
-  _mStringToEdge.insert( std::make_pair( "none",    NONE ) );
-  _mStringToEdge.insert( std::make_pair( "rising",  RISING ) );
-  _mStringToEdge.insert( std::make_pair( "falling", FALLING ) );
-  _mStringToEdge.insert( std::make_pair( "both",    BOTH ) );
 }
 
 //------------------------------------------------------------------------------
 //! @brief   Standard Destructor
 //------------------------------------------------------------------------------
 GpioManager::~GpioManager() {
-  std::map< epicsUInt32, GPIO >::iterator it = _mgpio.begin();
-  for( ; it != _mgpio.end(); ++it ) {
-    unexportPin( it->first );
-  }
-  _mgpio.clear();
+  close( _fdInp );
+  close( _fdOut );
 }
 
 //------------------------------------------------------------------------------
-//! @brief   Export GPIO
+//! @brief   Register GPIOs to GpioManager
+//!
+//! @param   [in]  gpio : id of requested gpio
+//! @param   [out] flags: Config flags for Gpio
 //------------------------------------------------------------------------------
-void GpioManager::exportPin( epicsUInt32 gpio ) {
-  static std::string _exportFile = "/sys/class/gpio/export";
+epicsUInt32 GpioManager::registerGpio( epicsUInt32 gpio, epicsUInt64 flags ) {
+  int gpiochip = open( "/dev/gpiochip0", 0 );
+  if( 0 > gpiochip ) {
+    std::stringstream errmsg;
+    errmsg << ERR_BEGIN << "GpioManager::registerGpio: Could not open GPIO device: "
+           << strerror( errno ) << ERR_END;
+    throw GpioManagerError( errmsg.str() );
+  }
 
-  // Each GPIO should only be handled by a single record
-  // If GPIO is already exported by GpioManager throw an exception
-  std::map< epicsUInt32, GPIO >::iterator it = _mgpio.find( gpio );
-  if( it != _mgpio.end() ){
-    if ( it->second.exported ) {
+  struct gpio_v2_line_info linfo;
+  memset( &linfo, 0, sizeof( linfo ));
+  linfo.offset = gpio;
+
+  int rtn = ioctl( gpiochip, GPIO_V2_GET_LINEINFO_IOCTL, &linfo );
+  if( -1 == rtn ){
+    std::stringstream errmsg;
+    errmsg << ERR_BEGIN << "GpioManager::registerGpio: Unable to get line info: "
+           << strerror( errno ) << ERR_END;
+    throw GpioManagerError( errmsg.str() );
+  }
+  if( linfo.flags & GPIO_V2_LINE_FLAG_USED ) {
+    std::stringstream errmsg;
+    errmsg << ERR_BEGIN << "GpioManager::registerGpio: GPIO "
+           << gpio << " already in use" <<ERR_END;
+    throw GpioManagerError( errmsg.str() );
+  }
+  close( gpiochip );
+
+  gpio_t newgpio = { gpio, flags };
+
+  epicsUInt32 offset = 0;
+  if( flags & GPIO_V2_LINE_FLAG_OUTPUT ){
+    _out.push_back( newgpio );
+    offset = _out.size() - 1;
+  } else {
+    _inp.push_back( newgpio );
+    offset = _inp.size() - 1;
+  }
+
+  return offset;
+}
+
+//------------------------------------------------------------------------------
+//! @brief   Requests the registered GPIO lines
+//!
+//! @TODO:   How to handle flags others then INP/OUT?
+//------------------------------------------------------------------------------
+void GpioManager::request() {
+
+  int fd = open( "/dev/gpiochip0", O_RDONLY );
+  if( 0 > fd ) {
+    std::stringstream errmsg;
+    errmsg << ERR_BEGIN << "GpioManager::request: Could not open GPIO device: "
+           << strerror( errno ) << ERR_END;
+    throw GpioManagerError( errmsg.str() );
+  }
+
+  struct gpio_v2_line_request reqinp;
+  memset( &reqinp, 0, sizeof( reqinp ));
+  strcpy( reqinp.consumer, "devGpio" );
+  for( size_t i = 0; i < _inp.size(); ++i )
+    reqinp.offsets[i] = _inp.at(i).id;
+  reqinp.num_lines    = _inp.size();
+  reqinp.config.flags = GPIO_V2_LINE_FLAG_INPUT;
+
+  int rtn = ioctl( fd, GPIO_V2_GET_LINE_IOCTL, &reqinp );
+  if( -1 == rtn ) {
+    std::stringstream errmsg;
+    errmsg << ERR_BEGIN << "GpioManager::request: Could not request gpios: "
+           << strerror( errno ) << ERR_END;
+    throw GpioManagerError( errmsg.str() );
+  }
+
+  struct gpio_v2_line_request reqout;
+  memset( &reqout, 0, sizeof( reqout ));
+  strcpy( reqout.consumer, "devGpio" );
+  for( size_t i = 0; i < _out.size(); ++i )
+    reqout.offsets[i] = _out.at(i).id;
+  reqout.num_lines    = _out.size();
+  reqout.config.flags = GPIO_V2_LINE_FLAG_OUTPUT;
+
+  rtn = ioctl( fd, GPIO_V2_GET_LINE_IOCTL, &reqout );
+  if( -1 == rtn ) {
+    std::stringstream errmsg;
+    errmsg << ERR_BEGIN << "GpioManager::request: Could not request gpios: "
+           << strerror( errno ) << ERR_END;
+    throw GpioManagerError( errmsg.str() );
+  }
+
+  _fdInp = reqinp.fd;
+  _fdOut = reqout.fd;
+
+  close( fd );
+}
+//------------------------------------------------------------------------------
+//! @brief
+//------------------------------------------------------------------------------
+void GpioManager::setValue( epicsUInt64 mask, epicsUInt32 val ) {
+  epicsUInt64 bits = 0;
+  epicsUInt64 msk  = mask;
+  int n = 0;
+  int m = 0;
+
+  while( msk ) {
+    if( msk & 1 ) {
+      epicsUInt64 buf = ( val & (1<<n) ) >> n;
+      bits |= buf << m;
+      ++n;
+    }
+    msk >>= 1;
+    ++m;
+  }
+
+  struct gpio_v2_line_values values = { bits, mask };
+  int ret = ioctl( _fdOut, GPIO_V2_LINE_SET_VALUES_IOCTL, values );
+  if( -1 == ret ) {
+    std::stringstream errmsg;
+    errmsg << ERR_BEGIN << "GpioManager::setValue: Could not set gpios: "
+           << strerror( errno ) << ERR_END;
+    throw GpioManagerError( errmsg.str() );
+  }
+}
+
+//------------------------------------------------------------------------------
+//! @brief
+//------------------------------------------------------------------------------
+epicsUInt32 GpioManager::getValue( epicsUInt64 mask ){
+  struct gpio_v2_line_values values = { 0, mask };
+  int ret = ioctl( _fdInp, GPIO_V2_LINE_GET_VALUES_IOCTL, &values );
+  if( -1 == ret ) {
+    std::stringstream errmsg;
+    errmsg << ERR_BEGIN << "GpioManager::getValue: Could not read gpios: "
+           << strerror( errno ) << ERR_END;
+    throw GpioManagerError( errmsg.str() );
+  }
+
+  epicsUInt32 val = 0;
+  int n = 0;
+  while( values.bits ) {
+    if( values.mask & 1 ) {
+      val |= ( values.bits & 1 ) << n;
+      ++n;
+    }
+    values.bits >>= 1;
+    values.mask >>= 1;
+  }
+
+  return val;
+}
+
+//------------------------------------------------------------------------------
+//! @brief
+//------------------------------------------------------------------------------
+epicsUInt32 GpioManager::event() {
+  struct gpio_v2_line_event event;
+
+  int ret = read( _fdInp, &event, sizeof(event));
+  if( -1 == ret ) {
+    if( errno == -EAGAIN ) {
+      return 0xffffffff;
+    } else {
       std::stringstream errmsg;
-      errmsg << ERR_BEGIN << "GpioManager::exportPin: Error: GPIO " << gpio << " already exported" << ERR_END;
+      errmsg << ERR_BEGIN << "GpioManager::events: Failed to read event: "
+             << strerror( errno ) << ERR_END;
       throw GpioManagerError( errmsg.str() );
     }
   }
-
-  // Check if Pin was exported by another process
-  std::stringstream gpioDir;
-  gpioDir << _gpiobase << gpio << "/direction";
-  if( access( gpioDir.str().c_str(), F_OK ) == 0 ) {
-    GPIO nfo;
-    nfo.exported = true;
-    _mgpio.insert( std::make_pair( gpio, nfo ) );
-    nfo.logic    = getLogic( gpio );
-    nfo.dir      = getDirection( gpio );
-
+  if( ret != sizeof( event )) {
     std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::exportPin: Warning: GPIO " << gpio << " already exported! Might be used by another process!" << ERR_END;
-    throw GpioManagerWarning( errmsg.str() );
-  }
-
-  std::fstream exportFs( _exportFile.c_str(), std::fstream::out );
-
-  if( !exportFs.is_open() || !exportFs.good() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::exportPin: Could not open export file: "
+    errmsg << ERR_BEGIN << "GpioManager::events: Failed to read event: "
            << strerror( errno ) << ERR_END;
     throw GpioManagerError( errmsg.str() );
   }
-
-  exportFs << gpio;
-  exportFs.flush();
-  if( exportFs.bad() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::exportPin: Could not export pin "
-           << gpio << ": "
-           << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-  exportFs.close();
-
-  GPIO nfo = { true, ACTIVE_HIGH, UNDIFIEND };
-  _mgpio.insert( std::make_pair( gpio, nfo ) );
-}
-
-//------------------------------------------------------------------------------
-//! @brief   Unexport GPIO
-//------------------------------------------------------------------------------
-void GpioManager::unexportPin( epicsUInt32 gpio ) {
-  static std::string _exportFile = "/sys/class/gpio/unexport";
-
-  std::map< epicsUInt32, GPIO >::iterator it = _mgpio.find( gpio );
-  if( it == _mgpio.end() ){
-    std::stringstream errmsg;
-    errmsg << "GpioManager::unexportPin: Error: GPIO " << gpio << " not managed.";
-    throw GpioManagerError( errmsg.str() );
-  } else if ( !it->second.exported ) {
-    return; // Nothing to do
-  }
-
-  std::fstream exportFs( _exportFile.c_str(), std::fstream::out );
-  if( !exportFs.is_open() || !exportFs.good() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::unexportPin: Could not open unexport file: "
-           << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  exportFs << it->first;
-  exportFs.flush();
-  if( exportFs.bad() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::unexportPin: Could not write to file: "
-           << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-  exportFs.close();
-
-  it->second.exported = false;
-
-}
-
-//------------------------------------------------------------------------------
-//! @brief   Set Direction of GPIO
-//------------------------------------------------------------------------------
-void GpioManager::setDirection( epicsUInt32 gpio, DIRECTION dir ) {
-
-  std::map< epicsUInt32, GPIO >::iterator it = _mgpio.find( gpio );
-  if( it == _mgpio.end() ){
-    std::stringstream errmsg;
-    errmsg << "GpioManager::setDirection: Error: GPIO " << gpio << " not managed.";
-    throw GpioManagerError( errmsg.str() );
-  } else if ( !it->second.exported ) {
-    std::stringstream errmsg;
-    errmsg << "GpioManager::setDirection: Error: GPIO " << gpio << " not exported.";
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  std::stringstream filename;
-  filename << _gpiobase << gpio << "/direction";
-
-  std::fstream dirFs( filename.str().c_str(), std::fstream::out );
-  if( !dirFs.is_open() || !dirFs.good() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::setDirection: Could not open direction file '"
-           << filename.str() << "': " << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  if( OUTPUT == dir ) dirFs << "out";
-  else                dirFs << "in";
-  dirFs.flush();
-  if( dirFs.bad() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::setDirection: Could not write to direction file '"
-           << filename.str() << "': " << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-  dirFs.close();
-  
-  it->second.dir = dir;
-}
-
-//------------------------------------------------------------------------------
-//! @brief   Get Direction of GPIO
-//------------------------------------------------------------------------------
-GpioManager::DIRECTION GpioManager::getDirection( epicsUInt32 gpio ) {
-  std::map< epicsUInt32, GPIO >::iterator it = _mgpio.find( gpio );
-  if( it == _mgpio.end() ){
-    std::stringstream errmsg;
-    errmsg << "GpioManager::getDirection: Error: GPIO " << gpio << " not managed.";
-    throw GpioManagerError( errmsg.str() );
-  } else if ( !it->second.exported ) {
-    std::stringstream errmsg;
-    errmsg << "GpioManager::getDirection: Error: GPIO " << gpio << " not exported.";
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  // Assuming we are the only ones managing this GPIO pin....
-  // if( it->second.dir != UNDIFIEND ) return it->second.dir;
-
-  std::stringstream filename;
-  filename << _gpiobase << gpio << "/direction";
-
-  std::fstream dirFs( filename.str().c_str(), std::fstream::in );
-  if( !dirFs.is_open() || !dirFs.good() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::getDirection: Could not open direction file '"
-           << filename.str() << "': " << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  std::string direction;
-  dirFs >> direction;
-  dirFs.close();
-
-  if( direction.compare( "out" ) == 0 ) {
-    it->second.dir = OUTPUT;
-    return OUTPUT;
-  }
-  
-  it->second.dir = INPUT;
-  return INPUT;
-
-}
-
-//------------------------------------------------------------------------------
-//! @brief   Set Value of GPIO
-//------------------------------------------------------------------------------
-void GpioManager::setValue( epicsUInt32 gpio, epicsUInt32 val ) {
-  std::map< epicsUInt32, GPIO >::iterator it = _mgpio.find( gpio );
-  if( it == _mgpio.end() ){
-    std::stringstream errmsg;
-    errmsg << "GpioManager::setValue: Error: GPIO " << gpio << " not managed.";
-    throw GpioManagerError( errmsg.str() );
-  } else if ( !it->second.exported ) {
-    std::stringstream errmsg;
-    errmsg << "GpioManager::setValue: Error: GPIO " << gpio << " not exported.";
-    throw GpioManagerError( errmsg.str() );
-  }
-
-//  if( it->second.dir != OUTPUT ) {
-//    std::stringstream errmsg;
-//    errmsg << "GpioManager::setValue: Error: GPIO " << gpio << " is not configured as output.";
-//    throw GpioManagerError( errmsg.str() );
-//  }
-
-  std::stringstream filename;
-  filename << _gpiobase << gpio << "/value";
-
-  std::fstream valFs( filename.str().c_str(), std::fstream::out );
-  if( !valFs.is_open() || !valFs.good() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::setValue: Could not open value file '"
-           << filename.str() << "': " << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  valFs << val;
-  valFs.flush();
-  if( valFs.bad() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::setValue: Could not write to value file '"
-           << filename.str() << "': " << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-  valFs.close();
-}
-
-//------------------------------------------------------------------------------
-//! @brief   Get Value of GPIO
-//------------------------------------------------------------------------------
-epicsUInt32 GpioManager::getValue( epicsUInt32 gpio ) {
-  std::map< epicsUInt32, GPIO >::iterator it = _mgpio.find( gpio );
-  if( it == _mgpio.end() ){
-    std::stringstream errmsg;
-    errmsg << "GpioManager::getValue: Error: GPIO " << gpio << " not managed.";
-    throw GpioManagerError( errmsg.str() );
-  } else if ( !it->second.exported ) {
-    std::stringstream errmsg;
-    errmsg << "GpioManager::getValue: Error: GPIO " << gpio << " not exported.";
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  std::stringstream filename;
-  filename << _gpiobase << gpio << "/value";
-
-  std::fstream valFs( filename.str().c_str(), std::fstream::in );
-  if( !valFs.is_open() || !valFs.good() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::getValue: Could not open value file '"
-           << filename.str() << "': " << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-  epicsUInt32 value = 0;
-  valFs >> value;
-  valFs.close();
-
-  return value;
-//  if( 1 == value ) {
-//    return HIGH;
-//  }
-//  return LOW;
-}
-
-//------------------------------------------------------------------------------
-//! @brief   Set Edge of GPIO
-//------------------------------------------------------------------------------
-void GpioManager::setEdge( epicsUInt32 gpio, EDGE_VALUE edge ) {
-  std::map< epicsUInt32, GPIO >::iterator it = _mgpio.find( gpio );
-  if( it == _mgpio.end() ){
-    std::stringstream errmsg;
-    errmsg << "GpioManager::setEdge: Error: GPIO " << gpio << " not managed.";
-    throw GpioManagerError( errmsg.str() );
-  } else if ( !it->second.exported ) {
-    std::stringstream errmsg;
-    errmsg << "GpioManager::setEdge: Error: GPIO " << gpio << " not exported.";
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  if( it->second.dir != INPUT ) {
-    std::stringstream errmsg;
-    errmsg << "GpioManager::setEdge: Error: GPIO " << gpio << " is not configured as input.";
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  std::stringstream filename;
-  filename << _gpiobase << gpio << "/edge";
-
-  std::fstream valFs( filename.str().c_str(), std::fstream::out );
-  if( !valFs.is_open() || !valFs.good() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::setEdge: Could not open edge file '"
-           << filename.str() << "': " << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-
-//  switch( edge ) {
-//    case NONE:    valFs << "none";    break;
-//    case RISING:  valFs << "rising";  break;
-//    case FALLING: valFs << "falling"; break;
-//    case BOTH:    valFs << "both";    break;
-//  }
-  valFs << _mEdgeToString[ edge ];
-  valFs.flush();
-  if( valFs.bad() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::setEdge: Could not write to edge file '"
-           << filename.str() << "': " << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-  valFs.close();
-}
-
-//------------------------------------------------------------------------------
-//! @brief   Get Edge of GPIO
-//------------------------------------------------------------------------------
-GpioManager::EDGE_VALUE GpioManager::getEdge( epicsUInt32 gpio ) {
-  std::map< epicsUInt32, GPIO >::iterator it = _mgpio.find( gpio );
-  if( it == _mgpio.end() ){
-    std::stringstream errmsg;
-    errmsg << "GpioManager::getEdge: Error: GPIO " << gpio << " not managed.";
-    throw GpioManagerError( errmsg.str() );
-  } else if ( !it->second.exported ) {
-    std::stringstream errmsg;
-    errmsg << "GpioManager::getEdge: Error: GPIO " << gpio << " not exported.";
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  std::stringstream filename;
-  filename << _gpiobase << gpio << "/edfe";
-
-  std::fstream valFs( filename.str().c_str(), std::fstream::in );
-  if( !valFs.is_open() || !valFs.good() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::getEdge: Could not open edge file '"
-           << filename.str() << "': " << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-  std::string edge;
-  valFs >> edge;
-  valFs.close();
-
-//  if( edge.compare( "none" ) == 0 )    return NONE;
-//  if( edge.compare( "rising" ) == 0 )  return RISING;
-//  if( edge.compare( "falling" ) == 0 ) return FALLING;
-//  if( edge.compare( "both" ) == 0 )    return BOTH;
-  
-  return _mStringToEdge[ edge ];
-}
-
-//------------------------------------------------------------------------------
-//! @brief   Set Logic of GPIO
-//------------------------------------------------------------------------------
-void GpioManager::setLogic( epicsUInt32 gpio, LOGIC_VALUE logic ) {
-  std::map< epicsUInt32, GPIO >::iterator it = _mgpio.find( gpio );
-  if( it == _mgpio.end() ){
-    std::stringstream errmsg;
-    errmsg << "GpioManager::setLogic: Error: GPIO " << gpio << " not managed.";
-    throw GpioManagerError( errmsg.str() );
-  } else if ( !it->second.exported ) {
-    std::stringstream errmsg;
-    errmsg << "GpioManager::setLogic: Error: GPIO " << gpio << " not exported.";
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  std::stringstream filename;
-  filename << _gpiobase << gpio << "/active_low";
-
-  std::fstream logicFs( filename.str().c_str(), std::fstream::out );
-  if( !logicFs.is_open() || !logicFs.good() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::setLogic: Could not open file '"
-           << filename.str() << "': " << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  logicFs << logic;
-  logicFs.flush();
-  if( logicFs.bad() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::setLogic: Could not write to file '"
-           << filename.str() << "': " << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  it->second.logic = logic;
-
-  logicFs.close();
-}
-
-//------------------------------------------------------------------------------
-//! @brief   Get Logic of GPIO
-//------------------------------------------------------------------------------
-GpioManager::LOGIC_VALUE GpioManager::getLogic( epicsUInt32 gpio ) {
-  std::map< epicsUInt32, GPIO >::iterator it = _mgpio.find( gpio );
-  if( it == _mgpio.end() ){
-    std::stringstream errmsg;
-    errmsg << "GpioManager::getLogic: Error: GPIO " << gpio << " not managed.";
-    throw GpioManagerError( errmsg.str() );
-  } else if ( !it->second.exported ) {
-    std::stringstream errmsg;
-    errmsg << "GpioManager::getLogic: Error: GPIO " << gpio << " not exported.";
-    throw GpioManagerError( errmsg.str() );
-  }
-
-  std::stringstream filename;
-  filename << _gpiobase << gpio << "/active_low";
-
-  std::fstream logicFs( filename.str().c_str(), std::fstream::in );
-  if( !logicFs.is_open() || !logicFs.good() ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN << "GpioManager::getLogic: Could not open file '"
-           << filename.str() << "': " << strerror( errno ) << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-  epicsUInt32 value = 0;
-  logicFs >> value;
-  logicFs.close();
-
-  if( 1 == value ) {
-    it->second.logic = ACTIVE_LOW;
-    return ACTIVE_LOW;
-  }
-
-  it->second.logic = ACTIVE_HIGH;
-  return ACTIVE_HIGH;
-}
-
-//------------------------------------------------------------------------------
-//! @brief   Wait for write permissions
-//!
-//! On BeagleBone Black write permissions to gpios are granted via udev rule.
-//! Udev rule needs about 25 ms to set permissions for the files belonging to
-//! on GPIO.
-//------------------------------------------------------------------------------
-void GpioManager::waitForUdev( epicsUInt32 gpio ) {
-  static const epicsUInt32 MAX_TRIES = 100;
-
-  epicsUInt32 ntries = 0;
-
-  std::stringstream filename;
-  filename << _gpiobase << gpio << "/direction";
-  
-  int accessOK = access( filename.str().c_str(), R_OK | W_OK );
-  while( accessOK < 0 && ntries < MAX_TRIES ) {
-    accessOK = access( filename.str().c_str(), R_OK | W_OK );
-    ++ntries;
-    usleep( 500 );
-  }
-  if( ntries >= MAX_TRIES ) {
-    std::stringstream errmsg;
-    errmsg << ERR_BEGIN
-           << "GpioManager::waitForUdev: Cannot access gpio "
-           << gpio
-           << " after "
-           << MAX_TRIES
-           << " tries: "
-           << strerror( errno )
-           << ERR_END;
-    throw GpioManagerError( errmsg.str() );
-  }
-
+  return event.offset;
 }
 

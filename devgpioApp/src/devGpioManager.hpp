@@ -22,51 +22,52 @@
 //
 //******************************************************************************
 
-#ifndef DEV_GPIO_INT_HANDLER_H
-#define DEV_GPIO_INT_HANDLER_H
+#ifndef DEV_GPIO_MANAGER_H
+#define DEV_GPIO_MANAGER_H
 
 //_____ I N C L U D E S ________________________________________________________
 
 // ANSI C/C++ includes
-#include <map>
-#include <string>
+#include <vector>
 
 // EPICS includes
-#include <epicsThread.h>
 #include <epicsTypes.h>
 
 // local includes
-#include "devGpio.h"
 
 //_____ D E F I N I T I O N S __________________________________________________
 
-// forward declaration
-struct epoll_event;
+class GpioManager {
+  public:
 
-//! @brief   thread handling interrupts from GPIOs
-class GpioIntHandler: public epicsThreadRunable {
- public:
-  GpioIntHandler();
-  virtual ~GpioIntHandler();
-  GpioIntHandler( GpioIntHandler const& rother ); // Not implemented
-  GpioIntHandler& operator=( GpioIntHandler const& rother ); // Not implemented
+    epicsUInt32 registerGpio( epicsUInt32 gpio, epicsUInt64 flags );
+    void request();
+    void setValue( epicsUInt64 mask, epicsUInt32 val );
+    epicsUInt32 getValue( epicsUInt64 mask );
 
-  virtual void run();
+    epicsUInt32 event();
 
-  epicsThread thread;
+    static GpioManager& instance() {
+      static GpioManager rinstance;
+      return rinstance;
+    }
 
-  void registerInterrupt( devGpio_info_t* pinfo );
-  void cancelInterrupt( devGpio_info_t const* pinfo );
+  private:
+    struct gpio_t {
+      epicsUInt32 id;
+      epicsUInt64 flags;
+    };
 
- private:
-  struct HANDLE {
-    devGpio_info_t* pinfo;
-    struct epoll_event *pev;
-  };
+    GpioManager();
+    ~GpioManager();
+    GpioManager( GpioManager const& rother ) = delete;
+    GpioManager& operator=( GpioManager const& rother ) = delete;
 
-  int _efd;
-  double _pause;
-  std::map< int, HANDLE* > _recs;
+    std::vector< gpio_t > _inp;
+    std::vector< gpio_t > _out;
+
+    int _fdInp;
+    int _fdOut;
 };
 
 #endif

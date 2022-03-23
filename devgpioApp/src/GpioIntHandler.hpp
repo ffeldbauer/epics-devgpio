@@ -22,8 +22,8 @@
 //
 //******************************************************************************
 
-#ifndef GPIO_CONST_H
-#define GPIO_CONST_H
+#ifndef DEV_GPIO_INT_HANDLER_H
+#define DEV_GPIO_INT_HANDLER_H
 
 //_____ I N C L U D E S ________________________________________________________
 
@@ -32,43 +32,37 @@
 #include <string>
 
 // EPICS includes
+#include <epicsThread.h>
 #include <epicsTypes.h>
 
 // local includes
+#include "devGpio.h"
 
 //_____ D E F I N I T I O N S __________________________________________________
 
-class GpioConst {
- public:
-  enum BOARD {
-    RASPI_B_REV2,
-    RASPI_BP,
-    BEAGLEBONE_BLACK
-  };
+// forward declaration
+struct epoll_event;
 
-  static bool exists();
-  static GpioConst* instance();
-  static void create( BOARD board );
+//! @brief   thread handling interrupts from GPIOs
+class GpioIntHandler: public epicsThreadRunable {
+  public:
+    GpioIntHandler();
+    virtual ~GpioIntHandler();
+    GpioIntHandler( GpioIntHandler const& rother ); // Not implemented
+    GpioIntHandler& operator=( GpioIntHandler const& rother ); // Not implemented
 
-  epicsUInt32 findGPIO( std::string const& keyOrName );
+    virtual void run();
 
- private:
-  GpioConst(); // Not implemented
-  GpioConst( BOARD board );
-  ~GpioConst();
-  GpioConst( GpioConst const& rother ); // Not implemented
-  GpioConst& operator=( GpioConst const& rother ); // Not implemented
+    epicsThread thread;
 
-  void init_raspi_b_rev2();
-  void init_raspi_bp();
-  void init_beagleboneblack();
+    void registerGpio( epicsUInt32 gpio, devGpio_info_t *pinfo );
+    void registerInterrupt( devGpio_info_t* pinfo );
+    void cancelInterrupt( devGpio_info_t* pinfo );
 
-  static GpioConst *_pinstance;
+  private:
 
-  BOARD _selection;
-  std::map< std::string, epicsUInt32 > _gpioByKey;
-  std::map< std::string, epicsUInt32 > _gpioByName;
-  std::map< std::string, epicsUInt32 > _gpioByNumber;
+    double _pause;
+    std::map< int, devGpio_info_t* > _recs;
 };
 
 #endif

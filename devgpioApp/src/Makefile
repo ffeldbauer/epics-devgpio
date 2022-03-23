@@ -16,7 +16,7 @@ LIBRARY_IOC += devgpio
 DBD += devgpio.dbd
 
 # specify all source files to be compiled and added to the library
-devgpio_SRCS += devGpioBi.c devGpioBo.c devGpio.cpp devGpioManager.cpp GpioConst.cpp GpioIntHandler.cpp
+devgpio_SRCS += devGpioBi.c devGpioMbbi.c devGpioBo.c devGpio.cpp devGpioManager.cpp GpioIntHandler.cpp
 
 devgpio_LIBS += $(EPICS_BASE_IOC_LIBS)
 
