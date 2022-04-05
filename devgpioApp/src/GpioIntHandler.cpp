@@ -87,6 +87,7 @@ void GpioIntHandler::run() {
       int rtn = read( r->fd, &event, sizeof(event));
       if( -1 == rtn ) {
         if( errno == -EAGAIN ) {
+          // nothing to read
           continue;
         } else {
           perror( "GpioIntHandler: Failed to read event: " );
@@ -129,11 +130,11 @@ void GpioIntHandler::registerInterrupt( dbCommon *prec ) {
 //! @param   [in]  pinfo  Address of the record's private data structure
 //------------------------------------------------------------------------------
 void GpioIntHandler::cancelInterrupt( devGpio_info_t* pinfo ) {
+  std::vector<devGpio_info_t const*>::iterator it = std::find( _recs.begin(), _recs.end(), pinfo );
+  _recs.erase(it);
   if( pinfo->pcallback ) {
     delete pinfo->pcallback;
     pinfo->pcallback = nullptr;
   }
-  std::vector<devGpio_info_t const*>::iterator it = std::find( _recs.begin(), _recs.end(), pinfo );
-  _recs.erase(it);
 }
 

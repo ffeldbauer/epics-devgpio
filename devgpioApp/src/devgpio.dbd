@@ -1,4 +1,5 @@
 device(bi,INST_IO,devGpioBi,"devgpio")
 device(mbbi,INST_IO,devGpioMbbi,"devgpio")
+device(mbbiDirect,INST_IO,devGpioMbbi,"devgpio")
 device(bo,INST_IO,devGpioBo,"devgpio")
-device(mbbo,INST_IO,devGpioMbbo,"devgpio")
+device(mbboDirect,INST_IO,devGpioMbbo,"devgpio")
