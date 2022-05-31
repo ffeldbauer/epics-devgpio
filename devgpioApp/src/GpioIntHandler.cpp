@@ -84,7 +84,7 @@ void GpioIntHandler::run() {
 
     for( auto r : _recs ) {
       struct gpio_v2_line_event event;
-      int rtn = read( r->fd, &event, sizeof(event));
+      ssize_t rtn = read( r->fd, &event, sizeof(event));
       if( -1 == rtn ) {
         if( errno == -EAGAIN ) {
           // nothing to read
