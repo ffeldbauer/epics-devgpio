@@ -89,10 +89,10 @@ static long devGpioInitRecord_mbbi( mbbiRecord *prec ){
 
   devGpio_rec_t conf = { &prec->inp, GPIO_V2_LINE_FLAG_INPUT };
   epicsUInt16 nobt = devGpioInitRecord( (dbCommon*)prec, &conf );
-  if( 1 > nobt )  return ERROR;
+  if( 1u > nobt )  return ERROR;
 
   prec->nobt = nobt;
-  prec->mask = (( 1 << nobt ) - 1);
+  prec->mask = (( 1u << nobt ) - 1u);
   prec->shft = 0;
 
   prec->udf = 0;
@@ -119,7 +119,7 @@ long devGpioRead_mbbi( mbbiRecord *prec ) {
     recGblSetSevr( prec, READ_ALARM, INVALID_ALARM );
     return ERROR;
   }
-  prec->rval = values.bits;
+  prec->rval = values.bits & prec->mask;
   return OK;
 }
 

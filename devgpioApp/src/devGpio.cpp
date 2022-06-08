@@ -150,7 +150,7 @@ epicsUInt16 devGpioInitRecord( dbCommon *prec, devGpio_rec_t* pconf ){
 
   if( options.empty() ) {
     std::cerr << prec->name << ": Invalid INP/OUT field: " << ss.str() << "\n"
-              << "    Syntax is \"<GPIO1> [GPIO2] [LOW] [FALLING/RISING/BOTH]\"" << std::endl;
+              << "    Syntax is \"@<GPIO1> [GPIO2] [LOW] [FALLING/RISING/BOTH]\"" << std::endl;
     return ERROR;
   }
 

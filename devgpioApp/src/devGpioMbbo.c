@@ -89,10 +89,10 @@ static long devGpioInitRecord_mbbo( mbboRecord *prec ){
 
   devGpio_rec_t conf = { &prec->out, GPIO_V2_LINE_FLAG_OUTPUT };
   epicsUInt16 nobt = devGpioInitRecord( (dbCommon*)prec, &conf );
-  if( 1 > nobt )  return ERROR;
+  if( 1u > nobt )  return ERROR;
 
   prec->nobt = nobt;
-  prec->mask = (( 1 << nobt ) - 1);
+  prec->mask = (( 1u << nobt ) - 1u);
   prec->shft = 0;
 
   prec->udf = 0;
