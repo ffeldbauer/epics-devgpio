@@ -1,18 +1,34 @@
 # epics-devgpio
-EPICS device support to control GPIOs on the BeagleBone Black / Raspberry Pi via the /sys/class/gpio interface
+EPICS device support to control GPIOs on the Single Board computers
 
-# R/W permissions on GPIOs
-On the Beaglebone Black the /sys/class/gpio interface belongs to root:root by default.
-To give read/write permissions to a normal user, the udev rule in `BeagleBoneBlack-PermFix`
-can be used.
+# ATTENTION
+Version 2 of this device support uses the new V2 ABI for GPIO character device (c.f. `/usr/include/linux/gpio.h`) which was introduced in Kernel 5.x.
+
+If you are using an older kernel version, please use [R1-0-6](releases/tag/R1-0-6)
 
 # Dependencies
 EPICS base 3.14.12.4 (or higher)
 
 # Build
-Change path to EPICS base installation in `configure/RELEASE`
+Set path to EPICS base installation in `configure/RELEASE.local` or `../RELEASE.local`
 run `make` in the top directory.
 
 # Usage
-Refer to the pdf in the doc directory.
+Version 2 supports single bit (bi/bo) as well as multibit (mbbi/o, mbbi/oDirect) records.
+
+Set the `DTYP` field of your recrod to `devGpio`.
+The Syntax for `INP` fields is:
+```
+@<GPIO1> [GPIO2] [LOW] [FALLING/RISING/BOTH]
+```
+* (bi records only support one GPIO)
+* The `LOW` flag switched the gpio into active low mode
+* FALLING/RISING/BOTH enables interrupt on falling, rising, or both edges, respectively
+
+The Syntax for `OUT` fields is:
+```
+@<GPIO1> [GPIO2] [LOW]
+```
+* (bi records only support one GPIO)
+* The `LOW` flag switched the gpio into active low mode
 
