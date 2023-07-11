@@ -94,35 +94,29 @@ static bool is_number( std::string const& s ) {
 //! @return  In case of error return -1, otherwise return 0
 //------------------------------------------------------------------------------
 long devGpioInit( int after ) {
+  static bool firstRunBefore = true;
+  static bool firstRunAfter = true;
 
-  if ( 0 == after ) { // before records have been initialized
-    static bool firstRunBefore = true;
+  if ( 0 == after ) {
+    // before records have been initialized
     if ( !firstRunBefore ) return OK;
     firstRunBefore = false;
 
-    gpiochip = open( "/dev/gpiochip0", 0 );
-    if( 0 > gpiochip ) {
-      perror( "Could not open GPIO device: " );
-      return ERROR;
+    if( 0 <= gpiochip ) {
+      intHandler = new GpioIntHandler();
     }
-
-    intHandler = new GpioIntHandler();
-
   } else {
-
-    static bool firstRunAfter = true;
+    // after records have been initialized
     if ( !firstRunAfter ) return OK;
     firstRunAfter = false;
 
     if( 0 <= gpiochip ) {
       close( gpiochip );
+      intHandler->thread.start();
     }
-
-    intHandler->thread.start();
   }
 
   return OK;
-
 }
 
 //-------------------------------------------------------------------------------
@@ -247,5 +241,31 @@ void devGpioCallback( CALLBACK *pcallback ) {
   dbScanLock( prec );
   dbProcess( prec );
   dbScanUnlock( prec );
+}
+
+
+extern "C" {
+
+  static iocshArg const GpioChipArg0 = { "gpiochip", iocshArgString };
+  static iocshArg const* const GpioChipArgs[] = { &GpioChipArg0 };
+  static iocshFuncDef const GpioChipFuncDef = { "GpioChip", 1, GpioChipArgs };
+
+  static void GpioChipCallFunc( iocshArgBuf const *args ) {
+    gpiochip = open( args[0].sval, 0 );
+    if( 0 > gpiochip ) {
+      perror( "Could not open GPIO device: " );
+      return ERROR;
+    }
+  }
+
+  void devGpioRegister( void ) {
+    static bool firstTime = true;
+    if ( firstTime ) {
+      iocshRegister( &GpioChipFuncDef, GpioChipCallFunc );
+      firstTime = false;
+    }
+  }
+
+  epicsExportRegistrar( devGpioRegister );
 }
 

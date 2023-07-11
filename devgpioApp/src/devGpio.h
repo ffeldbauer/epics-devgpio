@@ -47,21 +47,6 @@
 #define ERROR                 -1
 
 /**
- * @brief Device Support Entry Table
- *
- * Pointers to the device support routines called by the records
- */
-typedef struct {
-  long number;            /**< number of device support routines */
-  DEVSUPFUN report;       /**< print report (unused) */
-  DEVSUPFUN init;         /**< init device support */
-  DEVSUPFUN init_record;  /**< init record instance */
-  DEVSUPFUN ioint_info;   /**< get io interrupt info */
-  DEVSUPFUN read_write;   /**< read/write value */
-  DEVSUPFUN special_conv; /**< convertion for ai/ao records */
-} devGpio_dset_t;
-
-/**
  * @brief Record configuration
  *
  * Configuration parameters used at initialization

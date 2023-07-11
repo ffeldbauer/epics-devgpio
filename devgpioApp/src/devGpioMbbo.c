@@ -58,18 +58,19 @@
 #include "devGpio.h"
 
 /*_____ D E F I N I T I O N S ________________________________________________*/
-static long devGpioInitRecord_mbbo( mbboRecord *prec );
-static long devGpioWrite_mbbo( mbboRecord *prec );
+static long devGpioInitRecord_mbbo( struct dbCommon *p );
+static long devGpioWrite_mbbo( struct mbboRecord *prec );
 
 /*_____ G L O B A L S ________________________________________________________*/
-devGpio_dset_t devGpioMbbo = {
-  6,
-  NULL,
-  devGpioInit,
-  devGpioInitRecord_mbbo,
-  NULL,
-  devGpioWrite_mbbo,
-  NULL
+mbboRecord devGpioMbbo = {
+  {
+    5,
+    NULL,
+    devGpioInit,
+    devGpioInitRecord_mbbo,
+    NULL
+  },
+  devGpioWrite_mbbo
 };
 epicsExportAddress( dset, devGpioMbbo );
 
@@ -84,11 +85,12 @@ epicsExportAddress( dset, devGpioMbbo );
  *
  * @return  In case of error return -1, otherwise return 0
  *----------------------------------------------------------------------------*/
-static long devGpioInitRecord_mbbo( mbboRecord *prec ){
+static long devGpioInitRecord_mbbo( struct dbCommon *p ){
+  struct mbboRecord *prec = (struct mbboRecord *)p;
   prec->pact = (epicsUInt8)true; /* disable record */
 
   devGpio_rec_t conf = { &prec->out, GPIO_V2_LINE_FLAG_OUTPUT };
-  epicsUInt16 nobt = devGpioInitRecord( (dbCommon*)prec, &conf );
+  epicsUInt16 nobt = devGpioInitRecord( p, &conf );
   if( 1u > nobt )  return ERROR;
 
   prec->nobt = nobt;

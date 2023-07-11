@@ -58,18 +58,19 @@
 #include "devGpio.h"
 
 /*_____ D E F I N I T I O N S ________________________________________________*/
-static long devGpioInitRecord_mbbi( mbbiRecord *prec );
-static long devGpioRead_mbbi( mbbiRecord *prec );
+static long devGpioInitRecord_mbbi( struct dbCommon *p );
+static long devGpioRead_mbbi( struct mbbiRecord *prec );
 
 /*_____ G L O B A L S ________________________________________________________*/
-devGpio_dset_t devGpioMbbi = {
-  6,
-  NULL,
-  devGpioInit,
-  devGpioInitRecord_mbbi,
-  devGpioGetIoIntInfo,
-  devGpioRead_mbbi,
-  NULL
+mbbidset devGpioMbbi = {
+  {
+    5,
+    NULL,
+    devGpioInit,
+    devGpioInitRecord_mbbi,
+    devGpioGetIoIntInfo
+  },
+  devGpioRead_mbbi
 };
 epicsExportAddress( dset, devGpioMbbi );
 
@@ -84,11 +85,12 @@ epicsExportAddress( dset, devGpioMbbi );
  *
  * @return  In case of error return -1, otherwise return 0
  *----------------------------------------------------------------------------*/
-static long devGpioInitRecord_mbbi( mbbiRecord *prec ){
+static long devGpioInitRecord_mbbi( struct dbCommon *p ){
+  struct mbbiRecord *prec = (struct mbbiRecord *)p;
   prec->pact = (epicsUInt8)true; /* disable record */
 
   devGpio_rec_t conf = { &prec->inp, GPIO_V2_LINE_FLAG_INPUT };
-  epicsUInt16 nobt = devGpioInitRecord( (dbCommon*)prec, &conf );
+  epicsUInt16 nobt = devGpioInitRecord( p, &conf );
   if( 1u > nobt )  return ERROR;
 
   prec->nobt = nobt;
@@ -108,7 +110,7 @@ static long devGpioInitRecord_mbbi( mbbiRecord *prec ){
  *
  * @return  In case of error return -1, otherwise return 0
  *----------------------------------------------------------------------------*/
-long devGpioRead_mbbi( mbbiRecord *prec ) {
+long devGpioRead_mbbi( struct mbbiRecord *prec ) {
   devGpio_info_t *pinfo = (devGpio_info_t *)prec->dpvt;
 
   struct gpio_v2_line_values values = { 0, prec->mask };
@@ -119,7 +121,7 @@ long devGpioRead_mbbi( mbbiRecord *prec ) {
     recGblSetSevr( prec, READ_ALARM, INVALID_ALARM );
     return ERROR;
   }
-  prec->rval = values.bits & prec->mask;
+  prec->rval = (epicsUInt32)values.bits & prec->mask;
   return OK;
 }
 

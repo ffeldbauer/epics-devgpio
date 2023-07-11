@@ -58,18 +58,20 @@
 #include "devGpio.h"
 
 /*_____ D E F I N I T I O N S ________________________________________________*/
-static long devGpioInitRecord_bi( biRecord *prec );
-static long devGpioRead_bi( biRecord *prec );
+static long devGpioInitRecord_bi( struct dbCommon *p );
+static long devGpioRead_bi( struct biRecord *prec );
 
 /*_____ G L O B A L S ________________________________________________________*/
-devGpio_dset_t devGpioBi = {
-  6,
-  NULL,
-  devGpioInit,
-  devGpioInitRecord_bi,
-  devGpioGetIoIntInfo,
-  devGpioRead_bi,
-  NULL
+
+bidset devGpioBi = {
+  {
+    5,
+    NULL,
+    devGpioInit,
+    devGpioInitRecord_bi,
+    devGpioGetIoIntInfo
+  },
+  devGpioRead_bi
 };
 epicsExportAddress( dset, devGpioBi );
 
@@ -84,11 +86,12 @@ epicsExportAddress( dset, devGpioBi );
  *
  * @return  In case of error return -1, otherwise return 0
  *----------------------------------------------------------------------------*/
-long devGpioInitRecord_bi( biRecord *prec ){
+long devGpioInitRecord_bi( struct dbCommon *p ){
+  struct biRecord *prec = (struct biRecord *)p;
   prec->pact = (epicsUInt8)true; /* disable record */
 
   devGpio_rec_t conf = { &prec->inp, GPIO_V2_LINE_FLAG_INPUT };
-  epicsUInt16 nobt = devGpioInitRecord( (dbCommon*)prec, &conf );
+  epicsUInt16 nobt = devGpioInitRecord( p, &conf );
   if( 1 != nobt ) {
     fprintf( stderr, "\033[31;1m%s: Invalid number of gpio lines: %u\033[0m\n",
              prec->name, nobt );
@@ -108,7 +111,7 @@ long devGpioInitRecord_bi( biRecord *prec ){
  *
  * @return  In case of error return -1, otherwise return 0
  *----------------------------------------------------------------------------*/
-long devGpioRead_bi( biRecord *prec ) {
+long devGpioRead_bi( struct biRecord *prec ) {
   devGpio_info_t *pinfo = (devGpio_info_t *)prec->dpvt;
 
   struct gpio_v2_line_values values = { 0, 1 };
