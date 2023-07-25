@@ -254,7 +254,6 @@ extern "C" {
     gpiochip = open( args[0].sval, 0 );
     if( 0 > gpiochip ) {
       perror( "Could not open GPIO device: " );
-      return ERROR;
     }
   }
 

@@ -62,7 +62,7 @@ static long devGpioInitRecord_mbbo( struct dbCommon *p );
 static long devGpioWrite_mbbo( struct mbboRecord *prec );
 
 /*_____ G L O B A L S ________________________________________________________*/
-mbboRecord devGpioMbbo = {
+mbbodset devGpioMbbo = {
   {
     5,
     NULL,
